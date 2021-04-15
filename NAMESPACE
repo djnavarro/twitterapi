@@ -2,4 +2,5 @@
 
 export(TWIT_get)
 export(TWIT_post)
+export(api_screen_name)
 export(user_type)

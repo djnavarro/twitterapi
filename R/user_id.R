@@ -23,6 +23,11 @@ user_type <- function(x, arg_name = "user") {
   }
 }
 
+#' Get the screen name of the authenticated user
+#'
+#' @param token Token
+#'
+#' @export
 api_screen_name <- function(token = NULL) {
   params <- list(
     include_entities = FALSE,
