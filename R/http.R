@@ -12,165 +12,80 @@ NULL
 
 #' @rdname TWIT
 #' @export
-TWIT_get <- function(token, api, params = NULL, ..., host = "api.twitter.com") {
-  resp <- TWIT_method("GET",
-                      token = token,
-                      api = api,
-                      params = params,
-                      ...,
-                      host = host
-  )
+TWIT_get <- rtweet:::TWIT_get
 
-  from_js(resp)
-}
 
 #' @rdname TWIT
 #' @export
-TWIT_post <- function(token, api, params = NULL, body = NULL, ..., host = "api.twitter.com") {
-  TWIT_method("POST",
-              token = token,
-              api = api,
-              params = params,
-              body = body,
-              ...,
-              host = host
-  )
-}
-
-TWIT_method <- function(method, token, api,
-                        params = NULL,
-                        host = "api.twiter.com",
-                        retryonratelimit = NULL,
-                        verbose = TRUE,
-                        ...) {
-  # need scipen to ensure large IDs are not displayed in scientific notation
-  # need ut8-encoding for the comma separated IDs
-  withr::local_options(scipen = 14, encoding = "UTF-8")
-
-  token <- check_token(token)
-  url <- paste0("https://", host, api, ".json")
-
-  repeat({
-    resp <- switch(method,
-                   GET = httr::GET(url, query = params, token, ...),
-                   POST = httr::POST(url, query = params, token, ...),
-                   stop("Unsupported method", call. = FALSE)
-    )
-
-    switch(resp_type(resp),
-           ok = break,
-           rate_limit = handle_rate_limit(
-             resp, api,
-             retryonratelimit = retryonratelimit,
-             verbose = verbose
-           ),
-           error = handle_error(resp)
-    )
-  })
-
-  resp
-}
+TWIT_post <- rtweet:::TWIT_post
 
 
 
-# helpers -----------------------------------------------------------------
+
+#' Pagination
+#'
+#' @description
+#' `r lifecycle::badge("experimental")`
+#' These are internal functions used for pagination inside of rtweet.
+#'
+#' @keywords internal
+#' @param token Expert use only. Use this to override authentication for
+#'   a single API call. In most cases you are better off changing the
+#'   default for all calls. See [auth_as()] for details.
+#' @param n Desired number of results to return. Results are downloaded
+#'   in pages when `n` is large; the default value will download a single
+#'   page. Set `n = Inf` to download as many results as possible.
+#'
+#'   The Twitter API rate limits the number of requests you can perform
+#'   in each 15 minute period. The easiest way to download more than that is
+#'   to use `retryonratelimit = TRUE`.
+#'
+#'   You are not guaranteed to get exactly `n` results back. You will get
+#'   fewer results when tweets have been deleted or if you hit a rate limit.
+#'   You will get more results if you ask for a number of tweets that's not
+#'   a multiple of page size, e.g. if you request `n = 150` and the page
+#'   size is 200, you'll get 200 results back.
+#' @param get_id A single argument function that returns a vector of ids given
+#'   the JSON response. The defaults are chosen to cover the most common cases,
+#'   but you'll need to double check whenever implementing pagination for
+#'   a new endpoint.
+#' @param max_id Supply a vector of ids or a data frame of previous results to
+#'   find tweets **older** than `max_id`.
+#' @param since_id Supply a vector of ids or a data frame of previous results to
+#'   find tweets **newer** than `since_id`.
+#' @param retryonratelimit If `TRUE`, and a rate limit is exhausted, will wait
+#'   until it refreshes. Most twitter rate limits refresh every 15 minutes.
+#'   If `FALSE`, and the rate limit is exceeded, the function will terminate
+#'   early with a warning; you'll still get back all results received up to
+#'   that point. The default value, `NULL`, consults the option
+#'   `rtweet.retryonratelimit` so that you can globally set it to `TRUE`,
+#'   if desired.
+#'
+#'   If you expect a query to take hours or days to perform, you should not
+#'   rely soley on `retryonratelimit` because it does not handle other common
+#'   failure modes like temporarily losing your internet connection.
+#' @param parse If `TRUE`, the default, returns a tidy data frame. Use `FALSE`
+#'   to return the "raw" list corresponding to the JSON returned from the
+#'   Twitter API.
+#' @param verbose Show progress bars and other messages indicating current
+#'   progress?
+#'
+#' @export
+TWIT_paginate_max_id <- rtweet:::TWIT_paginate_max_id
 
 
-`%||%` <- function (x, y) {
-  if (is.null(x))
-    y
-  else x
-}
+# https://developer.twitter.com/en/docs/pagination
+#' @rdname TWIT_paginate_max_id
+#'
+#' @param cursor Which page of results to return. The default will return
+#'   the first page; you can supply the result from a previous call to
+#'   continue pagination from where it left off.
+#'
+#' @export
+TWIT_paginate_cursor <- rtweet:::TWIT_paginate_cursor
 
-from_js <- function(resp) {
-  if (!grepl("application/json", resp$headers[["content-type"]])) {
-    stop("API did not return json", call. = FALSE)
-  }
-  resp <- httr::content(resp, as = "text", encoding = "UTF-8")
-  jsonlite::fromJSON(resp)
-}
 
-resp_type <- function(resp) {
-  x <- resp$status_code
-  if (x == 429) {
-    "rate_limit"
-  } else if (x >= 400) {
-    "error"
-  } else {
-    "ok"
-  }
-}
-
-# Three possible exits:
-# * skip, if testing
-# * return, if retryonratelimit is TRUE
-# * error, otherwise
-handle_rate_limit <- function(x, api, retryonratelimit = NULL, verbose = TRUE) {
-  if (is_testing()) {
-    testthat::skip("Rate limit exceeded")
-  }
-
-  headers <- httr::headers(x)
-  n <- headers$`x-rate-limit-limit`
-  when <- .POSIXct(as.numeric(headers$`x-rate-limit-reset`))
-
-  retryonratelimit <- retryonratelimit %||% getOption("rtweet.retryonratelimit", FALSE)
-
-  if (retryonratelimit) {
-    wait_until(when, api, verbose = verbose)
-  } else {
-    message <- c(
-      paste0("Rate limit exceeded for Twitter endpoint '", api, "'"),
-      paste0("Will receive ", n, " more requests at ", format(when, "%H:%M"))
-    )
-    abort(message, class = "rtweet_rate_limit", when = when)
-  }
-}
-
-# I don't love this interface because it returns either a httr response object
-# or a condition object, but it's easy to understand and avoids having to do
-# anything exotic to break from the correct frame.
-catch_rate_limit <- function(code) {
-  tryCatch(code, rtweet_rate_limit = function(e) e)
-}
-
-is_rate_limit <- function(x) inherits(x, "rtweet_rate_limit")
-
-warn_early_term <- function(cnd, hint, hint_if) {
-  warn(c(
-    "Terminating paginate early due to rate limit.",
-    cnd$message,
-    i = if (hint_if) hint,
-    i = "Set `retryonratelimit = TRUE` to automatically wait for reset"
-  ))
-}
-
-# https://developer.twitter.com/en/support/twitter-api/error-troubleshooting
-handle_error <- function(x) {
-  json <- from_js(x)
-  stop(
-    "Twitter API failed [", x$status_code, "]\n",
-    paste0(" * ", json$errors$message, " (", json$errors$code, ")"),
-    call. = FALSE
-  )
-}
-
-check_status <- function(x, api) {
-  switch(resp_type(x),
-         ok = NULL,
-         rate_limit = ,
-         error = handle_error(x)
-  )
-}
-
-check_token <- function(token = NULL) {
-  token <- token %||% rtweet::auth_get()
-
-  if (inherits(token, "Token1.0")) {
-    token
-  } else if (inherits(token, "rtweet_bearer")) {
-    httr::add_headers(Authorization = paste0("Bearer ", token$token))
-  } else {
-    abort("`token` is not a valid access token")
-  }
-}
+#' @rdname TWIT_paginate_max_id
+#'
+#' @export
+TWIT_paginate_chunked <- rtweet:::TWIT_paginate_chunked
