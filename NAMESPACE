@@ -2,3 +2,4 @@
 
 export(TWIT_get)
 export(TWIT_post)
+export(user_type)
